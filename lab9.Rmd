@@ -10,11 +10,198 @@ library(tidyverse)
 library(statar)
 library(haven)
 library(rdrobust)
+library(sandwich)
+library(lmtest)
 dat <- read_dta("holc.dta")
 view(dat)
 
 
 ```
 
+
+```{r q1}
+
+#Q1: Graphing an RDD analysis
+#1A: Binned scatter plot of likelihood of having a HOLC map drawn conditional on 1930 population > 40,000
+#creating indicator variable 
+dat$dist_from_cut <- dat$pop_1930 - 40000
+dat1930 <- dat |> filter(year <= 1930)
+
+#draw binned scatter plot with linear fit
+redline_rdd <- rdplot(dat1930$holc_map, 
+ dat1930$dist_from_cut, 
+ p = 1,
+ nbins = c(50, 50),
+ binselect = "es",
+ y.lim = c(0, 1),
+ x.label = "City Population in 1930 minus 40,000",
+ y.label = "HOLC Map Drawn?"
+ )
+redline_rdd
+
+#1B: Binned scatter plots of other 1930 city characteristics to verify discontinuity of HOLC map 
+#Homeownership rate
+#further subset to only 1930 
+homeown_rdd <- rdplot(dat1930$ownhome, 
+ dat1930$dist_from_cut, 
+ p = 1,
+ nbins = c(20, 20),
+ binselect = "es",
+ y.lim = c(0, 1),
+ x.label = "City Population in 1930 minus 40,000",
+ y.label = "Homeownership rate"
+ )
+homeown_rdd
+
+#Median rent
+rent_rdd <- rdplot(dat1930$median_gross_rent, 
+ dat1930$dist_from_cut, 
+ p = 1,
+ nbins = c(20, 20),
+ binselect = "es",
+ x.label = "City Population in 1930 minus 40,000",
+ y.label = "Median rent"
+ )
+rent_rdd
+
+
+```
+
+***Question 1C***
+The binned scatterplot showing the likelihood of a HOLC map drawn clearly shows a discontinuity at the 40,000 1930 population mark. In contrast, two other related variables, homeownership rate and median gross rent, do not show discontinuities around any population threshold. This suggests that the RDD research design is valid for this question. 
+
+
+```{r q1d}
+
+#Question 1D: Binned scatter plot of homeownership rates 1940-2010 discontinuity conditional on 1930 population > 40000
+
+dfthrupresent <- dat %>% filter(year >= 1940 & year <= 2010)
+narrow <- subset(dfthrupresent, dist_from_cut <= 1000 & dist_from_cut >= -1000)
+
+present_rdd <- rdplot(narrow$ownhome, 
+ narrow$dist_from_cut, 
+ p = 1,
+ nbins = c(20, 20),
+ binselect = "es",
+ y.lim = c(0, 1),
+ x.label = "City Population in 1930 minus 40,000",
+ y.label = "Homeownership rates"
+ )
+present_rdd
+
+
+```
+```{r q2}
+
+#Question 2: RDD regression model
+
+#Create indicator for being above probation threshold
+dat$above <- 0
+dat$above[which(dat$dist_from_cut >= 0)] <- 1
+view(dat)
+#Interact dist_from_cut with non-probation
+dat$interaction <- dat$dist_from_cut*dat$above
+
+##Subset data to [1940,2010] with new variables added
+dat_narrow <- subset(dat, year<=2010 & year>=1940)
+#Estimate regression
+linear <- lm(ownhome ~ above + dist_from_cut + interaction , data =
+dat_narrow)
+#Report coefficients and standard errors
+coeftest(linear, vcovCL(linear, cluster = dat_narrow$city_id))
+
+
+```
+***Question 2 interpretation***
+The regression discontinuity estimate is -0.020823, indicating that a city's 1930 population being above the HOLC redline threshold contributed to a decrease in the home ownership rate pooled from 1940 to 2010 by 2 percent, however, the result is not statistically significant. 
+
+```{r q3}
+
+#Question 3: Graphing DiD analysis
+#creating indicator variable
+dat$treat <- ifelse(dat$pop_1930>40000, 1, 0)
+mean(dat$treat)
+
+#Bin scatter plot – connected dots
+ownhomedid <- ggplot(dat,
+ aes(x=year,y=ownhome,
+ colour = factor(treat, labels = c("1930 pop < 40K", "1930 pop > 40K")),
+ shape = factor(treat, labels = c("1930 pop < 40K", "1930 pop > 40K")))) +
+ geom_vline(xintercept=1935) +
+ stat_summary(fun = "mean",geom="point") +
+ stat_summary(fun = "mean",geom="line") +
+ labs(x = "Year", y = "Home Ownership Rate", shape = "", colour = "") +
+ theme(legend.position="bottom")
+
+ownhomedid
+
+
+```
+
+***Question 3b***
+The parallel trends assumption is plausibly satisfied in the data. Cities above and below 40,000 in population were following roughly the same trajectory with regards to home ownership rates, with cities with a 1930 population above 40,000 having higher home ownership rates until roughly 1935-1940, where the trends flip. From there on out, cities with a 1930 population below 40,000 start to outpace their counterparts, peaking around 1960.
+
+```{r q4}
+
+#Q4: Reporting conditional means
+y_post_treat = dat %>% filter(pop_1930 > 40000 & year >= 1940 & year <= 1960) %>% 
+  summarise(mean(ownhome, na.rm=TRUE))
+
+y_pre_treat = dat %>% filter(pop_1930 > 40000 & year <= 1930) %>% 
+  summarise(mean(ownhome, na.rm=TRUE))
+
+y_post_control = dat %>% filter(pop_1930 <= 40000 & year >= 1940 & year <= 1960) %>% 
+  summarise(mean(ownhome, na.rm=TRUE))
+
+y_pre_control = dat %>% filter(pop_1930 <= 40000 & year <= 1930) %>% 
+  summarise(mean(ownhome, na.rm=TRUE))
+
+diff = (y_post_treat - y_pre_treat) - (y_post_control - y_pre_control)
+diff
+
+```
+
+***Question 4***
+The difference in difference in the 1940-1960 homeownership rate and the 1910-1930 homeownership rate between cities with a 1930 population above and below 40,000 is approximately a decrease of 3.1 percentage points.
+
+```{r q5}
+
+#Question 5: DiD regression for 1910-1960
+#Create indicators
+dat$treat <- ifelse(dat$pop_1930>40000, 1, 0)
+dat$post <- ifelse(dat$year>=1940, 1, 0)
+#Interact treat and post
+dat$dd <- dat$treat*dat$post
+
+#Data frame with subset of years and new variables generated
+dat_narrow <- subset(dat, year>=1910 & year <= 1960)
+#Estimate regression 
+reg1 <- lm(ownhome ~ treat + post + dd, data=dat_narrow)
+#Report coefficients and standard errors
+coeftest(reg1, vcovCL(reg1, cluster = dat_narrow$city_id))
+
+
+```
+***Question 5*** 
+The coefficient for the interaction variable of post and treat indicator variables is the same as the manually calculated difference in difference for treatment and control cities in the time periods specified.
+
+```{r q6}
+
+#Question 6: Fixed effects regression
+
+#Estimate regression 
+reg2 <- lm(ownhome ~ dd + factor(year) + factor(city_id) + dd,
+ data=dat_narrow)
+#Report coefficients and standard errors
+coeftest(reg2, vcovCL(reg2, cluster = dat_narrow$city_id))
+
+
+
+```
+***Question 6***
+The fixed effects regression's interaction term variable's coefficient is a similar decrease of 3.25 percentage points in the homeownership rate for treated cities.
+
+***Question 7***
+It is evident that HOLC redlining practices had a negative impact on howe ownership rates in the decades after 1930. The RDD and DiD graphical reviews, the RDD regression, the normal DiD regression, and the fixed effects DiD regression suggest, to varying degrees of statistical significance, that being 'treated' - that is, being a city with a 1930 population above 40,000 - is associated with an decrease in the homeownership rate between 1940 and 1960 compared to 'control' cities. 
 
 
